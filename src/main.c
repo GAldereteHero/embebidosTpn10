@@ -54,16 +54,24 @@
 #include "FreeRTOS.h"
 #include "bsp.h"
 #include "task.h"
+#include "event_groups.h"
 #include <stdbool.h>
 
 /* === Definicion y Macros ================================================= */
 
-/* === Declaraciones de tipos de datos internos ============================ */
+#define BOTON_PRUEBA_ACTIVADO       (1 << 0)
+#define BOTON_PRUEBA_LIBERADO       (1 << 4)
 
-typedef struct parametros_s {
-    digital_output_t led;
-    uint16_t delay;
-} * parametros_t;
+#define BOTON_PRENDER_ACTIVADO      (1 << 1)
+#define BOTON_PRENDER_LIBERADO      (1 << 5)
+
+#define BOTON_CAMBIAR_ACTIVADO      (1 << 2)
+#define BOTON_CAMBIAR_LIBERADO      (1 << 6)
+
+#define BOTON_APAGAR_ACTIVADO       (1 << 3)
+#define BOTON_APAGAR_LIBERADO       (1 << 7)
+
+/* === Declaraciones de tipos de datos internos ============================ */
 
 /* === Declaraciones de funciones internas ================================= */
 
@@ -73,48 +81,84 @@ static board_t board;
 
 /* === Definiciones de variables externas ================================== */
 
+EventGroupHandle_t eventos_teclas;
+
 /* === Definiciones de funciones internas ================================== */
 
-void Blinking(void * parameters) {
-    parametros_t parametros = (parametros_t) parameters;
+void Azul(void * parameters) {
+    board_t param = parameters;
+    EventBits_t eventos;
 
     while (true) {
-        DigitalOutputToggle(parametros->led);
-        vTaskDelay(pdMS_TO_TICKS(parametros->delay));
+        eventos = xEventGroupWaitBits(eventos_teclas, BOTON_PRUEBA_ACTIVADO | BOTON_PRUEBA_LIBERADO, pdTRUE, pdFALSE, portMAX_DELAY);
+        if(eventos & BOTON_PRUEBA_ACTIVADO){
+            DigitalOutputActivate(param->led_azul);
+        } else if(eventos & BOTON_PRUEBA_LIBERADO){
+            DigitalOutputDeactivate(param->led_azul);
+        }
     }
 }
 
-void BlinkingSinc(void * parameters) {
-    parametros_t parametros = (parametros_t) parameters;
-    TickType_t ultimo_valor;
-
-    ultimo_valor = xTaskGetTickCount();
-    while (true) {
-        DigitalOutputToggle(parametros->led);
-        vTaskDelayUntil(&ultimo_valor, pdMS_TO_TICKS(parametros->delay));
-    }
-}
-
-void TecScan(void * state) {
-    TaskHandle_t tarea;
-    bool taskState = state;
+void Roja(void * parameters) {
+    board_t param = parameters;
     
-    tarea = xTaskGetHandle("Rojo");
+    while (true) {
+     if(xEventGroupWaitBits(eventos_teclas, BOTON_CAMBIAR_ACTIVADO, pdTRUE, pdFALSE, portMAX_DELAY)){
+        DigitalOutputToggle(param->led_rojo);
+     }
+    }
+}
+
+void Amarilla(void * parameters) {
+    board_t param = parameters;
+    
+    while (true) {
+        if(xEventGroupWaitBits(eventos_teclas, BOTON_PRENDER_ACTIVADO, pdTRUE, pdFALSE, portMAX_DELAY)){
+            DigitalOutputActivate(param->led_amarillo);
+        }
+        if(xEventGroupWaitBits(eventos_teclas, BOTON_APAGAR_ACTIVADO, pdTRUE, pdFALSE, portMAX_DELAY)){
+            DigitalOutputDeactivate(param->led_amarillo);
+        }
+    }
+}
+
+void Verde(void * parameters) {
+    board_t param = parameters;
+    
+    while (true) {
+        DigitalOutputToggle(param->led_verde);
+        vTaskDelay(pdMS_TO_TICKS(5 * 150));
+    }
+
+}
+
+void TecScan(void * parameters) {
+    // parametros_t param = parameters;
 
     while (true) {
         if(DigitalInputHasActivated(board->boton_cambiar)){
-         if(taskState){
-            vTaskSuspend(tarea);
-            taskState = false;
-         }else {
-            vTaskResume(tarea);
-            taskState = true;
+            xEventGroupSetBits(eventos_teclas, BOTON_CAMBIAR_ACTIVADO);
+        }else if(DigitalInputHasDeactivated(board->boton_cambiar)){
+            xEventGroupSetBits(eventos_teclas, BOTON_CAMBIAR_LIBERADO);
         } 
-        }
+
+        if(DigitalInputHasActivated(board->boton_apagar)){
+            xEventGroupSetBits(eventos_teclas, BOTON_APAGAR_ACTIVADO);
+        }else if(DigitalInputHasDeactivated(board->boton_apagar)){
+            xEventGroupSetBits(eventos_teclas, BOTON_APAGAR_LIBERADO);
+        } 
 
         if(DigitalInputHasActivated(board->boton_prender)){
-            DigitalOutputToggle(board->led_azul);
-        }
+            xEventGroupSetBits(eventos_teclas, BOTON_PRENDER_ACTIVADO);
+        }else if(DigitalInputHasDeactivated(board->boton_prender)){
+            xEventGroupSetBits(eventos_teclas, BOTON_PRENDER_LIBERADO);
+        } 
+
+        if(DigitalInputHasActivated(board->boton_prueba)){
+            xEventGroupSetBits(eventos_teclas, BOTON_PRUEBA_ACTIVADO);
+        }else if(DigitalInputHasDeactivated(board->boton_prueba)){
+            xEventGroupSetBits(eventos_teclas, BOTON_PRUEBA_LIBERADO);
+        } 
 
         vTaskDelay(pdMS_TO_TICKS(150));
     }
@@ -131,25 +175,16 @@ void TecScan(void * state) {
  */
 int main(void) {
     /* Inicializaciones y configuraciones de dispositivos */
-    static struct parametros_s parametros[3];
-    static bool taskState = true;    
-    
     board = BoardCreate();
 
-    parametros[0].led = board->led_rojo;
-    parametros[0].delay = 500;
-
-    parametros[1].led = board->led_verde;
-    parametros[1].delay = 750;
-
-    parametros[2].led = board->led_amarillo;
-    parametros[2].delay = 250;
+    eventos_teclas = xEventGroupCreate();
 
     /* Creación de las tareas */
-    xTaskCreate(Blinking, "Rojo", configMINIMAL_STACK_SIZE, &parametros[0], tskIDLE_PRIORITY + 1, NULL);
-    xTaskCreate(Blinking, "Verde", configMINIMAL_STACK_SIZE, &parametros[1], tskIDLE_PRIORITY + 1, NULL);
-    xTaskCreate(BlinkingSinc, "Amarillo", configMINIMAL_STACK_SIZE, &parametros[2], tskIDLE_PRIORITY + 1, NULL);
-    xTaskCreate(TecScan, "EscanearTeclado", configMINIMAL_STACK_SIZE, &taskState, tskIDLE_PRIORITY + 2, NULL);
+    xTaskCreate(Azul, "Azul", configMINIMAL_STACK_SIZE, (void *)board, tskIDLE_PRIORITY + 1, NULL);
+    xTaskCreate(Roja, "Roja", configMINIMAL_STACK_SIZE, (void *)board, tskIDLE_PRIORITY + 1, NULL);
+    xTaskCreate(Amarilla, "Amarilla", configMINIMAL_STACK_SIZE, (void *)board, tskIDLE_PRIORITY + 1, NULL);
+    xTaskCreate(Verde, "Verde", configMINIMAL_STACK_SIZE, (void *)board, tskIDLE_PRIORITY + 1, NULL);
+    xTaskCreate(TecScan, "EscanearTeclado", configMINIMAL_STACK_SIZE, (void *)board, tskIDLE_PRIORITY + 1, NULL);
 
     /* Arranque del sistema operativo */
     vTaskStartScheduler();
